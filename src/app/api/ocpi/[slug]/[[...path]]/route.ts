@@ -3,7 +3,7 @@ import { publicOrigin } from '@/lib/config';
 import { fixtures } from '@/lib/fixtures';
 import { assertSafeDestination } from '@/lib/deliveries';
 import { verifyPeer } from '@/lib/peer-verification';
-import { envelope, parseAuthorization, sanitizeUrl, validToken, versionDetails } from '@/lib/ocpi';
+import { envelope, moduleDirection, parseAuthorization, sanitizeUrl, validToken, versionDetails } from '@/lib/ocpi';
 import {
   authenticate, createSyntheticCommand, currentCredential, disconnect, getEnvironment, moduleObjects,
   registerCredentials, trace, upsertModuleObject, deleteModuleObject,
@@ -52,6 +52,9 @@ export async function GET(request: Request, routeContext: Context) {
   }
   const moduleName = /^\/2\.2\.1\/(locations|tariffs|tokens|sessions|cdrs)$/.exec(path)?.[1] as keyof ReturnType<typeof fixtures> | undefined;
   if (moduleName && environment.modules.includes(moduleName)) {
+    if (moduleDirection(environment.role, moduleName) !== 'SENDER') {
+      return reply(envelope(null, 2002, 'Module not published by this role'), traceIds, 403);
+    }
     const data = moduleName === 'sessions' || moduleName === 'cdrs'
       ? await moduleObjects(environment.id, moduleName)
       : fixtures(environment)[moduleName];
@@ -59,6 +62,9 @@ export async function GET(request: Request, routeContext: Context) {
   }
   const key = moduleObjectKey(path);
   if (key && environment.modules.includes(key.module)) {
+    if (moduleDirection(environment.role, key.module) !== 'SENDER') {
+      return reply(envelope(null, 2002, 'Module not published by this role'), traceIds, 403);
+    }
     const objects = await moduleObjects(environment.id, key.module as 'sessions' | 'cdrs');
     const found = objects.find(obj => obj.id === key.objectId);
     if (found) return reply(envelope(found), traceIds);
@@ -103,6 +109,9 @@ async function command(request: Request, routeContext: Context) {
   const commandName = /^\/2\.2\.1\/commands\/(START_SESSION|STOP_SESSION)$/.exec(path)?.[1] as 'START_SESSION' | 'STOP_SESSION' | undefined;
   if (!environment || !commandName || !environment.modules.includes('commands')) {
     return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
+  }
+  if (moduleDirection(environment.role, 'commands') !== 'SENDER') {
+    return reply(envelope(null, 2002, 'Role not authorized to send commands'), traceIds, 403);
   }
   const auth = await authenticate(environment, parseAuthorization(request.headers.get('authorization')));
   if (auth.kind !== 'C') return reply(envelope(null, 2002, 'Invalid Token C'), traceIds, 401);
@@ -158,6 +167,9 @@ export async function DELETE(request: Request, routeContext: Context) {
   if (!key || !environment.modules.includes(key.module)) {
     return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
   }
+  if (moduleDirection(environment.role, key.module) !== 'SENDER') {
+    return reply(envelope(null, 2002, 'Role not authorized to publish this module'), traceIds, 403);
+  }
   await deleteModuleObject(environment.id, key.module as 'sessions' | 'cdrs', key.objectId);
   return reply(envelope(null), traceIds);
 }
@@ -174,6 +186,9 @@ async function upsertModule(request: Request, routeContext: Context) {
   const key = moduleObjectKey(path);
   if (!key || !environment.modules.includes(key.module)) {
     return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
+  }
+  if (moduleDirection(environment.role, key.module) !== 'SENDER') {
+    return reply(envelope(null, 2002, 'Role not authorized to publish this module'), traceIds, 403);
   }
   const body = await request.json().catch(() => null) as Record<string, unknown> | null;
   if (!body || typeof body !== 'object') {

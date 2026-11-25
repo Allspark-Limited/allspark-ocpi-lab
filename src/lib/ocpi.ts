@@ -24,13 +24,30 @@ export function envelope(data: unknown, statusCode = OCPI_SUCCESS, statusMessage
   return { data, status_code: statusCode, status_message: statusMessage, timestamp: new Date().toISOString() };
 }
 
+export type ModuleDirection = 'SENDER' | 'RECEIVER';
+
+const senderModulesByRole: Record<OcpiRole, string[]> = {
+  CPO: ['locations', 'tariffs', 'tokens'],
+  EMSP: ['sessions', 'cdrs', 'commands'],
+  HUB: ['locations', 'tariffs', 'tokens', 'sessions', 'cdrs', 'commands'],
+  NAP: ['locations', 'tariffs', 'tokens', 'sessions', 'cdrs', 'commands'],
+  NSP: ['sessions', 'cdrs', 'commands'],
+  SCSP: ['sessions', 'cdrs', 'commands'],
+  OTHER: [],
+};
+
+export function moduleDirection(role: OcpiRole, module: string): ModuleDirection {
+  if (module === 'credentials') return 'RECEIVER';
+  return senderModulesByRole[role].includes(module) ? 'SENDER' : 'RECEIVER';
+}
+
 export function versionDetails(environment: EnvironmentView, baseUrl: string) {
   const endpoints = [{ identifier: 'credentials', role: 'RECEIVER', url: `${baseUrl}/2.2.1/credentials` }];
   for (const identifier of environment.modules) {
     if (identifier === 'credentials') continue;
     endpoints.push({
       identifier,
-      role: identifier === 'commands' ? 'RECEIVER' : 'SENDER',
+      role: moduleDirection(environment.role, identifier),
       url: `${baseUrl}/2.2.1/${identifier}`,
     });
   }

@@ -3,6 +3,7 @@ import { config, hashSecret } from './config.ts';
 import { db } from './db.ts';
 import { decrypt, encrypt, freshToken, tokenHint, tokenMatches } from './crypto.ts';
 import type { EnvironmentView, OcpiRole, Scenario } from './ocpi.ts';
+import { moduleDirection } from './ocpi.ts';
 
 type EnvironmentRow = {
   id: string; slug: string; name: string; country_code: string; party_id: string; role: OcpiRole;
@@ -264,6 +265,9 @@ export async function sendCommand(input: {
   requestId: string;
   correlationId: string;
 }) {
+  if (moduleDirection(input.environment.role, 'commands') !== 'SENDER') {
+    throw new Error('role_not_authorized_for_commands');
+  }
   const sql = db();
   const tokenC = await currentCredential(input.environment);
   if (!tokenC) throw new Error('no_active_token_c');
