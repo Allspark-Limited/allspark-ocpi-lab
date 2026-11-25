@@ -9,6 +9,7 @@ type EnvironmentRow = {
   id: string; slug: string; name: string; country_code: string; party_id: string; role: OcpiRole;
   supported_modules: string[]; scenario: Scenario; status: EnvironmentView['status'];
   credential_generation: number; bootstrap_consumed_at: string | null; bootstrap_token_hint: string; expires_at: string;
+  owner_id: string | null;
 };
 
 function view(row: EnvironmentRow): EnvironmentView {
@@ -23,20 +24,21 @@ function view(row: EnvironmentRow): EnvironmentView {
 
 export async function createEnvironment(input: {
   name: string; countryCode: string; partyId: string; role: OcpiRole; modules: string[]; scenario: Scenario;
+  ownerId: string;
 }) {
   const sql = db();
-  const count = await sql<{ count: number }[]>`select count(*)::int as count from lab_private.environments where status = 'active' and expires_at > now()`;
+  const count = await sql<{ count: number }[]>`select count(*)::int as count from lab_private.environments where status = 'active' and expires_at > now() and owner_id = ${input.ownerId}`;
   if (count[0].count >= config().LAB_MAX_ENVIRONMENTS) throw new Error('environment_capacity_reached');
   const slug = randomBytes(9).toString('base64url').toLowerCase().replace(/[^a-z0-9]/g, '').padEnd(12, '0').slice(0, 12);
   const tokenA = freshToken(24);
   const rows = await sql<EnvironmentRow[]>`
     insert into lab_private.environments
       (slug, name, country_code, party_id, role, supported_modules, scenario, bootstrap_token_hash,
-       bootstrap_token_hint, expires_at)
+       bootstrap_token_hint, expires_at, owner_id)
     values
       (${slug}, ${input.name}, ${input.countryCode}, ${input.partyId}, ${input.role}, ${input.modules},
        ${input.scenario}, ${hashSecret(tokenA)}, ${tokenHint(tokenA)},
-       now() + (${config().LAB_ENVIRONMENT_TTL_HOURS}::text || ' hours')::interval)
+       now() + (${config().LAB_ENVIRONMENT_TTL_HOURS}::text || ' hours')::interval, ${input.ownerId})
     returning *`;
   return { environment: view(rows[0]), tokenA };
 }
