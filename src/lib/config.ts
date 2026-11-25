@@ -8,6 +8,8 @@ const schema = z.object({
   LAB_ADMIN_SECRET: z.string().min(12),
   LAB_ENVIRONMENT_TTL_HOURS: z.coerce.number().int().min(1).max(168).default(24),
   LAB_MAX_ENVIRONMENTS: z.coerce.number().int().min(1).max(1000).default(25),
+  LAB_MAX_REQUESTS_PER_MINUTE: z.coerce.number().int().min(1).max(10000).default(60),
+  LAB_ALLOW_PRIVATE_CALLBACKS: z.coerce.boolean().default(false),
 });
 
 export type LabConfig = z.infer<typeof schema>;

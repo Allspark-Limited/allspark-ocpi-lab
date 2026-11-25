@@ -2,6 +2,7 @@ import { NextResponse } from 'next/server';
 import { publicOrigin } from '@/lib/config';
 import { fixtures } from '@/lib/fixtures';
 import { assertSafeDestination } from '@/lib/deliveries';
+import { rateLimit, rateLimitExceededResponse, rateLimitKey } from '@/lib/rate-limit';
 import { verifyPeer } from '@/lib/peer-verification';
 import { envelope, moduleDirection, parseAuthorization, sanitizeUrl, validToken, versionDetails } from '@/lib/ocpi';
 import {
@@ -17,6 +18,12 @@ function reply(data: unknown, traceIds: { requestId: string; correlationId: stri
   response.headers.set('X-Correlation-ID', traceIds.correlationId);
   response.headers.set('Cache-Control', 'no-store');
   return response;
+}
+
+function rateLimited(request: Request) {
+  const result = rateLimit(rateLimitKey(request));
+  if (!result.allowed) return rateLimitExceededResponse(result);
+  return null;
 }
 
 async function contextFor(request: Request, context: Context) {
@@ -37,6 +44,8 @@ function moduleObjectKey(path: string): { module: string; objectId: string } | n
 }
 
 export async function GET(request: Request, routeContext: Context) {
+  const limited = rateLimited(request);
+  if (limited) return limited;
   const { environment, traceIds, path, base } = await contextFor(request, routeContext);
   if (!environment || environment.status === 'expired') return reply(envelope(null, 2001, 'Environment unavailable'), traceIds, 404);
   if (path === '/versions') return reply(envelope([{ version: '2.2.1', url: `${base}/2.2.1` }]), traceIds);
@@ -140,21 +149,29 @@ async function command(request: Request, routeContext: Context) {
 }
 
 export async function POST(request: Request, context: Context) {
+  const limited = rateLimited(request);
+  if (limited) return limited;
   const params = await context.params;
   const path = `/${(params.path ?? []).join('/')}`;
   if (path === '/2.2.1/credentials') return writeCredentials(request, { params: Promise.resolve(params) }, 'POST');
   return command(request, { params: Promise.resolve(params) });
 }
 export async function PUT(request: Request, context: Context) {
+  const limited = rateLimited(request);
+  if (limited) return limited;
   const params = await context.params;
   const path = `/${(params.path ?? []).join('/')}`;
   if (path === '/2.2.1/credentials') return writeCredentials(request, { params: Promise.resolve(params) }, 'PUT');
   return upsertModule(request, { params: Promise.resolve(params) });
 }
 export async function PATCH(request: Request, routeContext: Context) {
+  const limited = rateLimited(request);
+  if (limited) return limited;
   return upsertModule(request, routeContext);
 }
 export async function DELETE(request: Request, routeContext: Context) {
+  const limited = rateLimited(request);
+  if (limited) return limited;
   const { environment, traceIds, path } = await contextFor(request, routeContext);
   if (!environment) return reply(envelope(null, 2001, 'Environment unavailable'), traceIds, 404);
   const auth = await authenticate(environment, parseAuthorization(request.headers.get('authorization')));

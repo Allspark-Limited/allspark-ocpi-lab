@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
+import { rateLimit, rateLimitExceededResponse, rateLimitKey } from '@/lib/rate-limit';
 import { createEnvironment, listEnvironments } from '@/lib/repository';
 import { validateSession, getSessionToken } from '@/lib/auth';
 
@@ -20,12 +21,16 @@ async function currentUser(request: Request) {
 }
 
 export async function GET(request: Request) {
+  const limit = rateLimit(rateLimitKey(request));
+  if (!limit.allowed) return rateLimitExceededResponse(limit);
   const user = await currentUser(request);
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   return NextResponse.json({ environments: await listEnvironments() });
 }
 
 export async function POST(request: Request) {
+  const limit = rateLimit(rateLimitKey(request));
+  if (!limit.allowed) return rateLimitExceededResponse(limit);
   const user = await currentUser(request);
   if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const parsed = inputSchema.safeParse(await request.json().catch(() => null));
