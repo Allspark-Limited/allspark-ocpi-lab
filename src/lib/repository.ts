@@ -2,6 +2,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { config, hashSecret } from './config.ts';
 import { db } from './db.ts';
 import { decrypt, encrypt, freshToken, tokenHint, tokenMatches } from './crypto.ts';
+import { assertSafeDestination } from './deliveries.ts';
 import type { EnvironmentView, OcpiRole, Scenario } from './ocpi.ts';
 import { moduleDirection } from './ocpi.ts';
 
@@ -185,6 +186,8 @@ export async function createSyntheticCommand(input: {
   const sql = db();
   const scenarioResult = input.environment.scenario === 'rejected' ? 'REJECTED'
     : input.environment.scenario === 'timeout' ? 'TIMEOUT' : 'ACCEPTED';
+  try { await assertSafeDestination(input.responseUrl); }
+  catch { throw new Error('callback_destination_not_allowed'); }
   return sql.begin(async transaction => {
     const sessionId = input.requestedSessionId ?? randomUUID();
     if (input.command === 'STOP_SESSION') {
@@ -273,6 +276,8 @@ export async function sendCommand(input: {
   const sql = db();
   const tokenC = await currentCredential(input.environment);
   if (!tokenC) throw new Error('no_active_token_c');
+  try { await assertSafeDestination(input.peerUrl); }
+  catch { throw new Error('peer_destination_not_allowed'); }
   const destination = new URL(input.peerUrl);
   if (destination.pathname.endsWith('/')) destination.pathname = destination.pathname.slice(0, -1);
   const commandPath = `/2.2.1/commands/${input.command}`;

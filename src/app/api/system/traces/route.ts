@@ -1,5 +1,6 @@
 import { NextResponse } from 'next/server';
 import { config } from '@/lib/config';
+import { rateLimit, rateLimitExceededResponse, rateLimitKey } from '@/lib/rate-limit';
 import { getEnvironment, traceDetail, tracesList } from '@/lib/repository';
 
 function authorized(request: Request) {
@@ -7,6 +8,8 @@ function authorized(request: Request) {
 }
 
 export async function GET(request: Request) {
+  const limit = rateLimit(rateLimitKey(request));
+  if (!limit.allowed) return rateLimitExceededResponse(limit);
   if (!authorized(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const url = new URL(request.url);
   const slug = url.searchParams.get('slug');
