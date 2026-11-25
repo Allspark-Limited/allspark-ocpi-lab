@@ -253,3 +253,129 @@ export function trace(request: Request) {
   const correlationId = request.headers.get('x-correlation-id')?.slice(0, 128) || requestId;
   return { requestId, correlationId };
 }
+
+export async function sendCommand(input: {
+  environment: EnvironmentView;
+  command: 'START_SESSION' | 'STOP_SESSION';
+  peerUrl: string;
+  responseUrl: string;
+  authorizationReference?: string;
+  requestedSessionId?: string;
+  requestId: string;
+  correlationId: string;
+}) {
+  const sql = db();
+  const tokenC = await currentCredential(input.environment);
+  if (!tokenC) throw new Error('no_active_token_c');
+  const destination = new URL(input.peerUrl);
+  if (destination.pathname.endsWith('/')) destination.pathname = destination.pathname.slice(0, -1);
+  const commandPath = `/2.2.1/commands/${input.command}`;
+  const fullUrl = `${destination.origin}${commandPath}`;
+  const body: Record<string, unknown> = { response_url: input.responseUrl };
+  if (typeof input.authorizationReference === 'string') body.authorization_reference = input.authorizationReference;
+  if (typeof input.requestedSessionId === 'string') body.session_id = input.requestedSessionId;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 8000);
+  let immediateResult: 'ACCEPTED' | 'REJECTED' | 'TIMEOUT';
+  try {
+    const response = await fetch(fullUrl, {
+      method: 'POST', redirect: 'error', signal: controller.signal,
+      headers: { authorization: `Token ${tokenC}`, 'content-type': 'application/json', 'ocpi-version': '2.2.1' },
+      body: JSON.stringify(body),
+    }).finally(() => clearTimeout(timer));
+    if (!response.ok) immediateResult = 'REJECTED';
+    else {
+      const result = await response.json() as { result?: string };
+      immediateResult = (result.result === 'ACCEPTED' || result.result === 'REJECTED' || result.result === 'TIMEOUT')
+        ? result.result as 'ACCEPTED' | 'REJECTED' | 'TIMEOUT' : 'ACCEPTED';
+    }
+  } catch {
+    immediateResult = 'TIMEOUT';
+  }
+  return sql.begin(async transaction => {
+    const sessionId = input.requestedSessionId ?? randomUUID();
+    const commands = await transaction<{ id: string }[]>`
+      insert into lab_private.commands
+        (environment_id, command, response_url, authorization_reference, session_id, immediate_result)
+      values (${input.environment.id}, ${input.command}, ${input.responseUrl},
+        ${input.authorizationReference ?? null}, ${sessionId}, ${immediateResult}) returning id`;
+    const commandId = commands[0].id;
+    if (immediateResult === 'ACCEPTED') {
+      const now = new Date().toISOString();
+      if (input.command === 'START_SESSION') {
+        const session = {
+          country_code: input.environment.countryCode, party_id: input.environment.partyId, id: sessionId,
+          start_date_time: now, kwh: 0, cdr_token: { country_code: input.environment.countryCode,
+            party_id: input.environment.partyId, uid: 'SYNTHETIC-TOKEN-1', type: 'APP_USER' },
+          auth_method: 'COMMAND', authorization_reference: input.authorizationReference,
+          location_id: 'LAB-LOCATION-1', evse_uid: 'LAB-EVSE-1', connector_id: '1',
+          currency: 'EUR', status: 'ACTIVE', last_updated: now,
+        };
+        await transaction`insert into lab_private.synthetic_objects (environment_id, module, object_id, payload)
+          values (${input.environment.id}, 'sessions', ${sessionId}, ${transaction.json(session)})`;
+      } else {
+        const existing = await transaction<{ payload: Record<string, unknown> }[]>`
+          select payload from lab_private.synthetic_objects where environment_id = ${input.environment.id}
+            and module = 'sessions' and object_id = ${sessionId} for update`;
+        if (!existing[0] || existing[0].payload.status !== 'ACTIVE') throw new Error('active_session_required');
+        const previous = existing[0].payload;
+        const completed: Record<string, unknown> = { ...previous, status: 'COMPLETED', kwh: 4.2, last_updated: now };
+        await transaction`update lab_private.synthetic_objects set payload = ${transaction.json(completed)}, updated_at = now()
+          where environment_id = ${input.environment.id} and module = 'sessions' and object_id = ${sessionId}`;
+        const cdrId = `CDR-${sessionId}`.slice(0, 128);
+        const cdr = {
+          country_code: input.environment.countryCode, party_id: input.environment.partyId, id: cdrId,
+          session_id: sessionId, start_date_time: previous.start_date_time, end_date_time: now,
+          cdr_token: previous.cdr_token, auth_method: 'COMMAND', authorization_reference: previous.authorization_reference,
+          cdr_location: { id: 'LAB-LOCATION-1', name: 'Allspark Synthetic Charging Lab', address: '1 Interoperability Way',
+            city: 'Dublin', country: 'IRL', coordinates: { latitude: '53.3498', longitude: '-6.2603' },
+            evse_uid: 'LAB-EVSE-1', evse_id: `${input.environment.countryCode}*${input.environment.partyId}*ELAB1`,
+            connector_id: '1', connector_standard: 'IEC_62196_T2_COMBO', connector_format: 'CABLE', connector_power_type: 'DC' },
+          currency: 'EUR', tariffs: [], charging_periods: [], total_cost: { excl_vat: 2.1, incl_vat: 2.58 },
+          total_energy: 4.2, total_time: 0.2, last_updated: now,
+        };
+        await transaction`insert into lab_private.synthetic_objects (environment_id, module, object_id, payload)
+          values (${input.environment.id}, 'cdrs', ${cdrId}, ${transaction.json(cdr)})`;
+      }
+    }
+    await transaction`insert into lab_private.receipts
+      (environment_id, kind, request_id, correlation_id, direction, method, path, outcome, details)
+      values (${input.environment.id}, 'command', ${input.requestId}, ${input.correlationId}, 'outbound', 'POST',
+        ${commandPath}, ${immediateResult.toLowerCase()},
+        ${transaction.json({ commandId, sessionId, peerUrl: input.peerUrl, immediateResult })})`;
+    return { commandId, sessionId, result: immediateResult };
+  });
+}
+
+export async function commandStatus(environmentId: string, commandId: string) {
+  const rows = await db()<({
+    id: string; command: string; response_url: string; authorization_reference: string | null;
+    session_id: string | null; immediate_result: string; callback_result: string | null;
+    created_at: string; updated_at: string;
+  })[]>`
+    select id, command, response_url, authorization_reference, session_id, immediate_result,
+      callback_result, created_at, updated_at
+    from lab_private.commands where id = ${commandId} and environment_id = ${environmentId}`;
+  return rows[0] ?? null;
+}
+
+export async function commandsList(environmentId: string) {
+  return db()`select id, command, immediate_result, callback_result, session_id, created_at, updated_at
+    from lab_private.commands where environment_id = ${environmentId}
+    order by created_at desc limit 100`;
+}
+
+export async function tracesList(environmentId: string) {
+  return db()`select id, kind, request_id, correlation_id, direction, method, path, outcome, details, created_at
+    from lab_private.receipts where environment_id = ${environmentId}
+    order by created_at desc limit 200`;
+}
+
+export async function traceDetail(environmentId: string, traceId: string) {
+  const rows = await db()<({ id: string; kind: string; request_id: string; correlation_id: string;
+    direction: string; method: string | null; path: string | null; outcome: string;
+    details: Record<string, unknown>; created_at: string })[]>`
+    select id, kind, request_id, correlation_id, direction, method, path, outcome, details, created_at
+    from lab_private.receipts where id = ${traceId} and environment_id = ${environmentId}`;
+  return rows[0] ?? null;
+}
