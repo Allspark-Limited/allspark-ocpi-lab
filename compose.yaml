@@ -1,0 +1,70 @@
+name: allspark-ocpi-lab
+services:
+  db:
+    image: postgres:17.6-alpine
+    environment:
+      POSTGRES_DB: ocpi_lab
+      POSTGRES_USER: ocpi_lab
+      POSTGRES_PASSWORD: ocpi_lab
+    ports:
+      - "55432:5432"
+    volumes:
+      - ocpi-lab-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ocpi_lab -d ocpi_lab"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+  migrate:
+    build:
+      context: .
+      target: migrate
+    environment: &app-env
+      DATABASE_URL: postgresql://ocpi_lab:ocpi_lab@db:5432/ocpi_lab
+      LAB_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      LAB_PUBLIC_URL: http://localhost:3000
+      LAB_ADMIN_SECRET: local-development-only
+      LAB_ENVIRONMENT_TTL_HOURS: 24
+      LAB_ALLOW_PRIVATE_CALLBACKS: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    restart: "no"
+  app:
+    build: .
+    environment: *app-env
+    ports:
+      - "3000:3000"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/health/ready"]
+      interval: 10s
+      timeout: 3s
+      retries: 10
+  worker:
+    build:
+      context: .
+      target: migrate
+    command: ["node", "--experimental-strip-types", "scripts/worker.ts"]
+    environment: *app-env
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+volumes:
+  ocpi-lab-data:
