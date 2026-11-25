@@ -6,7 +6,7 @@ import { verifyPeer } from '@/lib/peer-verification';
 import { envelope, parseAuthorization, sanitizeUrl, validToken, versionDetails } from '@/lib/ocpi';
 import {
   authenticate, createSyntheticCommand, currentCredential, disconnect, getEnvironment, moduleObjects,
-  registerCredentials, trace,
+  registerCredentials, trace, upsertModuleObject, deleteModuleObject,
 } from '@/lib/repository';
 
 type Context = { params: Promise<{ slug: string; path?: string[] }> };
@@ -26,6 +26,14 @@ async function contextFor(request: Request, context: Context) {
   const path = `/${(params.path ?? []).join('/')}`;
   const base = `${publicOrigin(request.url)}/api/ocpi/${params.slug}`;
   return { environment, traceIds, path, base };
+}
+
+const moduleSegment = /^\/2\.2\.1\/(locations|tariffs|tokens|sessions|cdrs)\/(.+)$/;
+
+function moduleObjectKey(path: string): { module: string; objectId: string } | null {
+  const match = moduleSegment.exec(path);
+  if (!match) return null;
+  return { module: match[1], objectId: match[2] };
 }
 
 export async function GET(request: Request, routeContext: Context) {
@@ -48,6 +56,13 @@ export async function GET(request: Request, routeContext: Context) {
       ? await moduleObjects(environment.id, moduleName)
       : fixtures(environment)[moduleName];
     return reply(envelope(data), traceIds);
+  }
+  const key = moduleObjectKey(path);
+  if (key && environment.modules.includes(key.module)) {
+    const objects = await moduleObjects(environment.id, key.module as 'sessions' | 'cdrs');
+    const found = objects.find(obj => obj.id === key.objectId);
+    if (found) return reply(envelope(found), traceIds);
+    return reply(envelope(null, 2003, 'Object not found'), traceIds, 404);
   }
   return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
 }
@@ -121,13 +136,49 @@ export async function POST(request: Request, context: Context) {
   if (path === '/2.2.1/credentials') return writeCredentials(request, { params: Promise.resolve(params) }, 'POST');
   return command(request, { params: Promise.resolve(params) });
 }
-export async function PUT(request: Request, context: Context) { return writeCredentials(request, context, 'PUT'); }
-
+export async function PUT(request: Request, context: Context) {
+  const params = await context.params;
+  const path = `/${(params.path ?? []).join('/')}`;
+  if (path === '/2.2.1/credentials') return writeCredentials(request, { params: Promise.resolve(params) }, 'PUT');
+  return upsertModule(request, { params: Promise.resolve(params) });
+}
+export async function PATCH(request: Request, routeContext: Context) {
+  return upsertModule(request, routeContext);
+}
 export async function DELETE(request: Request, routeContext: Context) {
   const { environment, traceIds, path } = await contextFor(request, routeContext);
-  if (!environment || path !== '/2.2.1/credentials') return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
+  if (!environment) return reply(envelope(null, 2001, 'Environment unavailable'), traceIds, 404);
   const auth = await authenticate(environment, parseAuthorization(request.headers.get('authorization')));
   if (auth.kind !== 'C') return reply(envelope(null, 2002, 'Invalid Token C'), traceIds, 401);
-  await disconnect(environment, traceIds.requestId, traceIds.correlationId);
+  if (path === '/2.2.1/credentials') {
+    await disconnect(environment, traceIds.requestId, traceIds.correlationId);
+    return reply(envelope(null), traceIds);
+  }
+  const key = moduleObjectKey(path);
+  if (!key || !environment.modules.includes(key.module)) {
+    return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
+  }
+  await deleteModuleObject(environment.id, key.module as 'sessions' | 'cdrs', key.objectId);
   return reply(envelope(null), traceIds);
+}
+
+async function upsertModule(request: Request, routeContext: Context) {
+  const { environment, traceIds, path } = await contextFor(request, routeContext);
+  if (!environment) return reply(envelope(null, 2001, 'Environment unavailable'), traceIds, 404);
+  const auth = await authenticate(environment, parseAuthorization(request.headers.get('authorization')));
+  if (auth.kind !== 'C') return reply(envelope(null, 2002, 'Invalid Token C'), traceIds, 401);
+  if (path === '/2.2.1/credentials') {
+    const params = await (routeContext as Context).params;
+    return writeCredentials(request, { params: Promise.resolve(params) }, 'PUT');
+  }
+  const key = moduleObjectKey(path);
+  if (!key || !environment.modules.includes(key.module)) {
+    return reply(envelope(null, 2003, 'Endpoint not found'), traceIds, 404);
+  }
+  const body = await request.json().catch(() => null) as Record<string, unknown> | null;
+  if (!body || typeof body !== 'object') {
+    return reply(envelope(null, 2001, 'Invalid payload'), traceIds, 400);
+  }
+  await upsertModuleObject(environment.id, key.module as 'sessions' | 'cdrs', key.objectId, body);
+  return reply(envelope({ id: key.objectId }), traceIds);
 }

@@ -152,10 +152,22 @@ export async function cleanupExpired() {
 }
 
 export async function moduleObjects(environmentId: string, moduleName: 'sessions' | 'cdrs') {
-  const rows = await db()<({ payload: Record<string, unknown> })[]>`
-    select payload from lab_private.synthetic_objects
+  const rows = await db()<({ id: string; payload: Record<string, unknown> })[]>`
+    select object_id as id, payload from lab_private.synthetic_objects
     where environment_id = ${environmentId} and module = ${moduleName} order by created_at`;
-  return rows.map(row => row.payload);
+  return rows.map(row => ({ id: row.id, ...row.payload }));
+}
+
+export async function upsertModuleObject(environmentId: string, moduleName: 'sessions' | 'cdrs', objectId: string, payload: Record<string, unknown>) {
+  return db()`insert into lab_private.synthetic_objects (environment_id, module, object_id, payload)
+    values (${environmentId}, ${moduleName}, ${objectId}, ${JSON.stringify(payload)})
+    on conflict (environment_id, module, object_id) do update set
+      payload = excluded.payload, updated_at = now()`;
+}
+
+export async function deleteModuleObject(environmentId: string, moduleName: 'sessions' | 'cdrs', objectId: string) {
+  return db()`delete from lab_private.synthetic_objects
+    where environment_id = ${environmentId} and module = ${moduleName} and object_id = ${objectId}`;
 }
 
 export async function createSyntheticCommand(input: {
