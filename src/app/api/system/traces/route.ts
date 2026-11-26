@@ -1,16 +1,19 @@
 import { NextResponse } from 'next/server';
-import { config } from '@/lib/config';
 import { rateLimit, rateLimitExceededResponse, rateLimitKey } from '@/lib/rate-limit';
 import { getEnvironment, traceDetail, tracesList } from '@/lib/repository';
+import { validateSession, getSessionToken } from '@/lib/auth';
 
-function authorized(request: Request) {
-  return request.headers.get('x-lab-admin-secret') === config().LAB_ADMIN_SECRET;
+async function currentUser(request: Request) {
+  const token = getSessionToken(request);
+  if (!token) return null;
+  return validateSession(token);
 }
 
 export async function GET(request: Request) {
   const limit = rateLimit(rateLimitKey(request));
   if (!limit.allowed) return rateLimitExceededResponse(limit);
-  if (!authorized(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const user = await currentUser(request);
+  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const url = new URL(request.url);
   const slug = url.searchParams.get('slug');
   if (!slug) return NextResponse.json({ error: 'slug_required' }, { status: 400 });
@@ -21,7 +24,8 @@ export async function GET(request: Request) {
 }
 
 export async function GET_TRACE(request: Request, context: { params: Promise<{ traceId: string }> }) {
-  if (!authorized(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const user = await currentUser(request);
+  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const url = new URL(request.url);
   const slug = url.searchParams.get('slug');
   const { traceId } = await context.params;

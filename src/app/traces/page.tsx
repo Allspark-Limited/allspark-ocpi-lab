@@ -1,6 +1,8 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import { authHeaders, clearSession, getSession } from '@/lib/session';
 
 type Trace = {
   id: string; kind: string; request_id: string; correlation_id: string;
@@ -9,16 +11,24 @@ type Trace = {
 };
 
 export default function TracesPage() {
+  const router = useRouter();
   const [slug, setSlug] = useState('');
   const [traces, setTraces] = useState<Trace[]>([]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
 
+  useEffect(() => {
+    if (!getSession()) { router.push('/login'); return; }
+    fetch('/api/auth/me', { headers: authHeaders() })
+      .catch(() => { clearSession(); router.push('/login'); });
+  }, [router]);
+
   const load = useCallback(async () => {
     if (!slug) return;
     setLoading(true); setError('');
     try {
-      const response = await fetch(`/api/system/traces?slug=${encodeURIComponent(slug)}`);
+      const response = await fetch(`/api/system/traces?slug=${encodeURIComponent(slug)}`, { headers: authHeaders() });
+      if (response.status === 401) { clearSession(); router.push('/login'); return; }
       if (!response.ok) { setError('Failed to load traces'); return; }
       const body = await response.json();
       setTraces(body.traces ?? []);
@@ -27,7 +37,7 @@ export default function TracesPage() {
     } finally {
       setLoading(false);
     }
-  }, [slug]);
+  }, [slug, router]);
 
   useEffect(() => {
     const timer = setTimeout(() => load(), 0);

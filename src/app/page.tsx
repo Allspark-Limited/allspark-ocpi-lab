@@ -1,6 +1,9 @@
 'use client';
 
-import { FormEvent, useState } from 'react';
+import { FormEvent, useEffect, useState } from 'react';
+import { useRouter } from 'next/navigation';
+import Link from 'next/link';
+import { authHeaders, clearSession, getSession } from '@/lib/session';
 
 type Created = {
   environment: { slug: string; name: string; role: string; scenario: string; expiresAt: string };
@@ -13,18 +16,34 @@ const scenarios = [
 ];
 
 export default function Home() {
-  const [adminSecret, setAdminSecret] = useState('local-development-only');
+  const router = useRouter();
   const [name, setName] = useState('My OCPI test environment');
   const [role, setRole] = useState('EMSP');
   const [scenario, setScenario] = useState('success');
   const [created, setCreated] = useState<Created | null>(null);
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [user, setUser] = useState<{ email: string } | null>(null);
+
+  useEffect(() => {
+    const token = getSession();
+    if (!token) { router.push('/login'); return; }
+    fetch('/api/auth/me', { headers: authHeaders() })
+      .then(r => r.ok ? r.json() : Promise.reject())
+      .then(body => setUser(body.user))
+      .catch(() => { clearSession(); router.push('/login'); });
+  }, [router]);
+
+  async function logout() {
+    await fetch('/api/auth/logout', { method: 'POST', headers: authHeaders() });
+    clearSession();
+    router.push('/login');
+  }
 
   async function create(event: FormEvent) {
     event.preventDefault(); setBusy(true); setError(''); setCreated(null);
     const response = await fetch('/api/environments', {
-      method: 'POST', headers: { 'content-type': 'application/json', 'x-lab-admin-secret': adminSecret },
+      method: 'POST', headers: { 'content-type': 'application/json', ...authHeaders() },
       body: JSON.stringify({ name, countryCode: 'IE', partyId: 'LAB', role, scenario,
         modules: ['credentials', 'locations', 'tariffs', 'tokens', 'commands', 'sessions', 'cdrs'] }),
     });
@@ -38,7 +57,14 @@ export default function Home() {
 
   return <main>
     <header className="hero">
-      <nav><span className="brand"><i>⚡</i> ALLSPARK <b>OCPI LAB</b></span><span className="pill">Synthetic only</span></nav>
+      <nav><span className="brand"><i>⚡</i> ALLSPARK <b>OCPI LAB</b></span>
+        <span style={{display:'flex',gap:16,alignItems:'center'}}>
+          {user && <span style={{color:'#c1d0ca',fontSize:13}}>{user.email}</span>}
+          <Link href="/traces" style={{color:'#c9f158',fontSize:13,textDecoration:'none'}}>Traces</Link>
+          <button onClick={logout} style={{background:'none',border:'1px solid #486159',borderRadius:99,padding:'8px 14px',color:'#d5e3dc',fontSize:12,cursor:'pointer',textTransform:'uppercase',letterSpacing:'.12em'}}>Sign out</button>
+          <span className="pill">Synthetic only</span>
+        </span>
+      </nav>
       <div className="heroGrid">
         <section>
           <p className="eyebrow">OCPI 2.2.1 interoperability, without the production risk</p>
@@ -59,7 +85,7 @@ export default function Home() {
       <form onSubmit={create}>
         <div className="field wide"><label>Environment name</label><input value={name} onChange={e => setName(e.target.value)} maxLength={80}/></div>
         <div className="field"><label>Role</label><select value={role} onChange={e => setRole(e.target.value)}><option>EMSP</option><option>CPO</option><option>HUB</option></select></div>
-        <div className="field"><label>Local admin secret</label><input type="password" autoComplete="off" value={adminSecret} onChange={e => setAdminSecret(e.target.value)}/></div>
+        <div className="field"><label>Country code</label><input value="IE" readOnly disabled/></div>
         <fieldset><legend>Scenario</legend>{scenarios.map(([value, label]) => <label className={`scenario ${scenario === value ? 'active' : ''}`} key={value}>
           <input type="radio" name="scenario" value={value} checked={scenario === value} onChange={() => setScenario(value)}/><b>{label}</b><small>{value}</small>
         </label>)}</fieldset>
