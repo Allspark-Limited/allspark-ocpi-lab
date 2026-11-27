@@ -1,5 +1,10 @@
-import { createHash, randomBytes, timingSafeEqual } from 'node:crypto';
+import { createHash, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 import { db } from './db.ts';
+
+const SCRYPT_KEYLEN = 64;
+const SCRYPT_N = 16384;
+const SCRYPT_R = 8;
+const SCRYPT_P = 1;
 
 type UserRow = {
   id: string; email: string; password_hash: string; created_at: string; updated_at: string;
@@ -25,11 +30,7 @@ export async function verifyUser(email: string, password: string): Promise<{ id:
   const rows = (await sql<UserRow[]>`
     select * from lab_private.users where email = ${email.trim().toLowerCase()}`) as unknown as UserRow[];
   if (!rows[0]) return null;
-  const ok = timingSafeEqual(
-    Buffer.from(hashPassword(password), 'hex'),
-    Buffer.from(rows[0].password_hash, 'hex'),
-  );
-  if (!ok) return null;
+  if (!verifyPassword(password, rows[0].password_hash)) return null;
   return { id: rows[0].id, email: rows[0].email };
 }
 
@@ -64,7 +65,23 @@ export async function destroySession(sessionToken: string) {
 }
 
 function hashPassword(password: string): string {
-  return createHash('sha256').update(password, 'utf8').digest('hex');
+  const salt = randomBytes(16);
+  const hash = scryptSync(password, salt, SCRYPT_KEYLEN, { N: SCRYPT_N, r: SCRYPT_R, p: SCRYPT_P });
+  return `scrypt$${SCRYPT_N}$${SCRYPT_R}$${SCRYPT_P}$${salt.toString('base64')}$${hash.toString('base64')}`;
+}
+
+function verifyPassword(password: string, stored: string): boolean {
+  const parts = stored.split('$');
+  if (parts.length !== 6 || parts[0] !== 'scrypt') return false;
+  const [, n, r, p, saltB64, hashB64] = parts;
+  const salt = Buffer.from(saltB64, 'base64');
+  const expected = Buffer.from(hashB64, 'base64');
+  const actual = scryptSync(password, salt, expected.length, {
+    N: Number(n),
+    r: Number(r),
+    p: Number(p),
+  });
+  return timingSafeEqual(actual, expected);
 }
 
 export function getSessionToken(request: Request): string | null {
@@ -73,3 +90,7 @@ export function getSessionToken(request: Request): string | null {
   const match = /^Bearer\s+(.+)$/i.exec(auth.trim());
   return match ? match[1] : null;
 }
+
+// Exported for tests only.
+export const hashPasswordForTest = hashPassword;
+export const verifyPasswordForTest = verifyPassword;
