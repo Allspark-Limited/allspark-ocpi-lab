@@ -9,6 +9,12 @@ const sql = postgres(connection, { max: 1, prepare: false });
 try {
   await sql`create schema if not exists lab_migrations`;
   await sql`create table if not exists lab_migrations.applied (name text primary key, applied_at timestamptz not null default now())`;
+  // Ensure Supabase-compatible roles exist for GRANT/REVOKE statements
+  await sql`do $$ begin if not exists (select 1 from pg_roles where rolname = 'anon') then create role anon noinherit noLogin; end if; end $$;`;
+  await sql`do $$ begin if not exists (select 1 from pg_roles where rolname = 'authenticated') then create role authenticated noinherit noLogin; end if; end $$;`;
+  // Create auth schema and auth.uid() function for Supabase-like policies
+  await sql`create schema if not exists auth;`;
+  await sql`create or replace function auth.uid() returns uuid language sql as $$ select null::uuid $$;`;
   const directory = path.join(process.cwd(), 'supabase', 'migrations');
   const files = (await readdir(directory)).filter(file => file.endsWith('.sql')).sort();
   for (const file of files) {

@@ -21,7 +21,7 @@ services:
       target: migrate
     environment: &app-env
       DATABASE_URL: postgresql://ocpi_lab:ocpi_lab@db:5432/ocpi_lab
-      LAB_MASTER_KEY: 0000000000000000000000000000000000000000000000000000000000000000
+      LAB_MASTER_KEY: "0000000000000000000000000000000000000000000000000000000000000000"
       LAB_PUBLIC_URL: http://localhost:3000
       LAB_ADMIN_SECRET: local-development-only
       LAB_ENVIRONMENT_TTL_HOURS: 24

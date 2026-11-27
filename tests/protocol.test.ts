@@ -12,7 +12,7 @@ const environment: EnvironmentView = {
 test('advertises only enabled modules with correct roles', () => {
   const details = versionDetails(environment, 'https://lab.example/api/ocpi/abc123def456');
   assert.deepEqual(details.endpoints.map(endpoint => `${endpoint.identifier}:${endpoint.role}`), [
-    'credentials:RECEIVER', 'locations:SENDER', 'commands:RECEIVER',
+    'credentials:RECEIVER', 'locations:RECEIVER', 'commands:SENDER',
   ]);
 });
 

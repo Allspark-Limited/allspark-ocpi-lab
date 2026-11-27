@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 import { z } from 'zod';
-import { config } from '@/lib/config';
+import { rateLimit, rateLimitExceededResponse, rateLimitKey } from '@/lib/rate-limit';
 import { createEnvironment, listEnvironments } from '@/lib/repository';
+import { validateSession, getSessionToken } from '@/lib/auth';
 
 const inputSchema = z.object({
   name: z.string().trim().min(1).max(80).default('Synthetic OCPI lab'),
@@ -13,21 +14,29 @@ const inputSchema = z.object({
   scenario: z.enum(['success', 'rejected', 'timeout', 'delayed', 'malformed']).default('success'),
 });
 
-function authorized(request: Request) {
-  return request.headers.get('x-lab-admin-secret') === config().LAB_ADMIN_SECRET;
+async function currentUser(request: Request) {
+  const token = getSessionToken(request);
+  if (!token) return null;
+  return validateSession(token);
 }
 
 export async function GET(request: Request) {
-  if (!authorized(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const limit = rateLimit(rateLimitKey(request));
+  if (!limit.allowed) return rateLimitExceededResponse(limit);
+  const user = await currentUser(request);
+  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   return NextResponse.json({ environments: await listEnvironments() });
 }
 
 export async function POST(request: Request) {
-  if (!authorized(request)) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
+  const limit = rateLimit(rateLimitKey(request));
+  if (!limit.allowed) return rateLimitExceededResponse(limit);
+  const user = await currentUser(request);
+  if (!user) return NextResponse.json({ error: 'unauthorized' }, { status: 401 });
   const parsed = inputSchema.safeParse(await request.json().catch(() => null));
   if (!parsed.success) return NextResponse.json({ error: 'invalid_environment', issues: parsed.error.issues }, { status: 400 });
   try {
-    const created = await createEnvironment(parsed.data);
+    const created = await createEnvironment({ ...parsed.data, ownerId: user.id });
     return NextResponse.json(created, { status: 201 });
   } catch (error) {
     const message = error instanceof Error ? error.message : 'create_failed';
